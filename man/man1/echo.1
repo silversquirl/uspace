@@ -1,0 +1,37 @@
+.Dd $Mdocdate: May 13 2021 $
+.Dt ECHO 1
+.Os uspace
+
+.Sh NAME
+.Nm echo
+.Nd write arguments to standard output
+
+.Sh SYNOPSIS
+.Nm
+.Op Ar string...
+
+.Sh DESCRIPTION
+The
+.Nm
+utility writes its arguments to standard output, followed by a newline.
+If there are no arguments, only the newline is written.
+
+No options are supported.
+
+.Sh EXIT STATUS
+.Ex -std
+
+."\ TODO: DIAGNOSTICS
+
+.Sh STANDARDS
+The
+.Nm
+utility is compliant with the
+.St -p1003.1-2008
+specification.
+
+.Sh AUTHORS
+The uspace implementation of
+.Nm
+was written by
+.An Samadi van Koten Aq Mt samadi@vktec.org.uk
