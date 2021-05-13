@@ -1,14 +1,5 @@
 const std = @import("std");
 
-fn contains(array: []const u8, char: u8) bool {
-    for (array) |element| {
-        if (element == char) {
-            return true;
-        }
-    }
-    return false;
-}
-
 const Flags = struct {
     left_just: bool = false,
     show_sign: bool = false,
@@ -17,39 +8,118 @@ const Flags = struct {
     zero_pad: bool = false,
 };
 
-fn intParse(str: []const u8, pos: *usize) usize {
-    var n: usize = 0;
-    while (true) : (pos.* += 1) {
-        const digit = std.fmt.charToDigit(str[pos.*], 10) catch |err| {
-            if (err == error.InvalidCharacter) {
-                break;
-            } else {
-                return err;
-            }
-        };
+const SpecifierData = struct {
+    flags: Flags = Flags{},
+    field_width: usize = 0,
+    precision: usize = 0,
+};
 
-        n = n * 10 + digit;
+fn noSpecifier(str: []const u8) bool {
+    for (str) |c| {
+        if (c == '%') {
+            return false;
+        }
     }
-    return n;
+    return true;
 }
 
-fn fmt_percent(
-    args: *std.process.ArgIterator,
-    flags: Flags,
-    field_width: usize,
-    precision: usize,
-) []const u8 {
-    return "%";
-}
+// All of these parsers parse only part of a string; i.e they parse whatever is
+// valid from a starting index, this could be no characters at all, in which
+// case there will be a default value specified. As an example strToInt parsing
+// the string "123hello" will return 123 and increment idx to be sitting at the
+// position of 'h'
+const Parser = struct {
+    str: []const u8,
+    idx: usize = 0,
 
-fn fmt_blank(
-    args: *std.process.ArgIterator,
-    flags: Flags,
-    field_width: usize,
-    precision: usize,
-) []const u8 {
-    return "";
-}
+    const Self = @This();
+
+    fn int(self: *Self) usize {
+        var n: usize = 0;
+        while (true) : (self.idx += 1) {
+            const digit = std.fmt.charToDigit(self.str[self.idx], 10) catch |err| {
+                if (err == error.InvalidCharacter) {
+                    break;
+                } else {
+                    return err;
+                }
+            };
+
+            n = n * 10 + digit;
+        }
+        return n;
+    }
+
+    fn flags(self: *Self) Flags {
+        var out = Flags{};
+        while (true) : (self.idx += 1) {
+            switch (self.str[self.idx]) {
+                '-' => out.left_just = true,
+                '+' => out.show_sign = true,
+                ' ' => out.no_sign_prefix = true,
+                '#' => out.alt_form = true,
+                '0' => out.zero_pad = true,
+                else => return out,
+            }
+        }
+    }
+
+    fn spec(self: *Self) ?fn (*std.process.ArgIterator, SpecifierData) []const u8 {
+        return switch (self.str[self.idx]) {
+            // 'a' => {},
+            // 'A' => {},
+            // 'd' => {},
+            // 'i' => {},
+            // 'o' => {},
+            // 'u' => {},
+            // 'x' => {},
+            // 'X' => {},
+            // 'f' => {},
+            // 'F' => {},
+            // 'e' => {},
+            // 'E' => {},
+            // 'g' => {},
+            // 'G' => {},
+            // 'c' => {},
+            // 's' => {},
+            '%' => fmt_functions.percent,
+            else => null,
+        };
+    }
+};
+
+const fmt_functions = struct {
+    fn evalEscape(allocator: *std.mem.Allocator, str: []const u8) ![]const u8 {
+        var list = std.ArrayList(u8).init(allocator);
+
+        var i: usize = 0;
+        while (i < str.len) : (i += 1) {
+            if (str[i] == '\\') {
+                i += 1;
+                try list.appendSlice(switch (str[i]) {
+                    '\\' => "\\", // backslash
+                    'a' => &.{7}, //alert
+                    'b' => &.{8}, // backspace
+                    'f' => &.{12}, // form-feed
+                    'n' => &.{'\n'}, // newline
+                    'r' => &.{'\r'}, // carrige-return
+                    't' => &.{'\t'}, // tab
+                    'v' => &.{11}, // vertical tab
+                    else => &.{ '\\', str[i] },
+                });
+            } else try list.append(str[i]);
+        }
+
+        return list.items;
+    }
+
+    fn percent(
+        args: *std.process.ArgIterator,
+        data: SpecifierData,
+    ) []const u8 {
+        return "%";
+    }
+};
 
 pub fn main() !void {
     const out = std.io.getStdOut().writer();
@@ -57,23 +127,20 @@ pub fn main() !void {
     var args = std.process.args();
     _ = args.skip();
 
-    const fmt_optional = args.nextPosix();
-    if (fmt_optional == null) {
+    const allocator = std.heap.page_allocator;
+
+    const fmt = try fmt_functions.evalEscape(allocator, args.nextPosix() orelse {
         try err.print("printf: not enough arguments\n", .{});
         return;
-    }
-    const fmt = fmt_optional.?;
+    });
+    defer allocator.free(fmt);
 
-    for (fmt) |c| {
-        if (c == '%') {
-            break;
-        }
-    } else {
+    if (noSpecifier(fmt)) {
         try out.print("{s}", .{fmt});
         return;
     }
 
-    var arg = args.nextPosix();
+    var arg: ?[:0]const u8 = "";
     while (arg != null) {
         var i: usize = 0;
         while (i < fmt.len) : (i += 1) {
@@ -81,48 +148,24 @@ pub fn main() !void {
                 const start = i;
                 i += 1;
 
-                var flags = Flags{};
-                while (true) : (i += 1) {
-                    switch (fmt[i]) {
-                        '-' => flags.left_just = true,
-                        '+' => flags.show_sign = true,
-                        ' ' => flags.no_sign_prefix = true,
-                        '#' => flags.alt_form = true,
-                        '0' => flags.zero_pad = true,
-                        else => break,
-                    }
-                }
+                var parser = Parser{
+                    .str = fmt,
+                    .idx = i,
+                };
 
-                const field_width = intParse(fmt, &i);
+                var spec_data = SpecifierData{};
+                spec_data.flags = parser.flags();
 
-                var precision: usize = 0;
+                spec_data.field_width = parser.int();
+
                 if (fmt[i] == '.') {
                     i += 1;
-                    precision = intParse(fmt, &i);
+                    spec_data.precision = parser.int();
                 }
 
-                const fmt_fn = switch (fmt[i]) {
-                    // 'a' => {},
-                    // 'A' => {},
-                    // 'd' => {},
-                    // 'i' => {},
-                    // 'o' => {},
-                    // 'u' => {},
-                    // 'x' => {},
-                    // 'X' => {},
-                    // 'f' => {},
-                    // 'F' => {},
-                    // 'e' => {},
-                    // 'E' => {},
-                    // 'g' => {},
-                    // 'G' => {},
-                    // 'c' => {},
-                    // 's' => {},
-                    '%' => fmt_percent,
-                    else => fmt_blank,
-                };
-                if (fmt_fn == fmt_blank) {
-                    try err.print("printf: {s}: invalid directive\n", .{fmt[start..i]});
+                const fmt_fn = parser.spec();
+                if (fmt_fn == null) {} else {
+                    try out.print("{s}", .{fmt_fn.?(&args, spec_data)});
                 }
             } else {
                 try out.print("{c}", .{fmt[i]});
