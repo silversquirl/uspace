@@ -1,0 +1,35 @@
+name: CI
+on:
+  push:
+    paths:
+      - '**.zig'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: goto-bus-stop/setup-zig@v1
+        with: {version: master}
+      - run: zig build -Drelease
+      - uses: actions/upload-artifact@v1
+        with:
+          name: uspace
+          path: zig-out/bin/
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: goto-bus-stop/setup-zig@v1
+        with: {version: master}
+      - run: zig build run-tests
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: goto-bus-stop/setup-zig@v1
+        with:
+          version: master
+      - run: zig fmt --check .
