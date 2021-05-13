@@ -15,36 +15,51 @@ pub fn build(b: *std.build.Builder) !void {
         std.ChildProcess.StdIo.Ignore,
     )});
 
-    // Iterate through the src dir
-    var srcDir = try std.fs.cwd().openDir("src", .{ .access_sub_paths = false, .iterate = true });
-    defer srcDir.close();
-    var iter = srcDir.iterate();
+    { // Add all executables
+        var srcDir = try std.fs.cwd().openDir("src", .{ .access_sub_paths = false, .iterate = true });
+        defer srcDir.close();
+        var iter = srcDir.iterate();
+        while (try iter.next()) |entry| {
+            if (stripSuffix(u8, entry.name, ".zig")) |name| {
+                // Add executable to the build
+                const exe = b.addExecutable(name, b.fmt("src/{s}", .{entry.name}));
 
-    while (try iter.next()) |entry| {
-        if (stripSuffix(u8, entry.name, ".zig")) |name| {
-            // Add executable to the build
-            const exe = b.addExecutable(name, b.fmt("src/{s}", .{entry.name}));
-            exe.strip = mode == .ReleaseSmall;
+                exe.addBuildOption(
+                    []const u8,
+                    "tags",
+                    tags,
+                );
 
-            exe.addBuildOption(
-                []const u8,
-                "tags",
-                tags,
-            );
+                exe.strip = mode == .ReleaseSmall;
+                exe.setTarget(target);
+                exe.setBuildMode(mode);
 
-            exe.setTarget(target);
-            exe.setBuildMode(mode);
+                exe.install();
 
-            exe.install();
-
-            // Add a run step for the executable
-            const run_cmd = exe.run();
-            run_cmd.step.dependOn(b.getInstallStep());
-            if (b.args) |args| {
-                run_cmd.addArgs(args);
+                // Add a run step for the executable
+                const run_cmd = exe.run();
+                run_cmd.step.dependOn(b.getInstallStep());
+                if (b.args) |args| {
+                    run_cmd.addArgs(args);
+                }
+                const run_step = b.step(name, b.fmt("Run {s}", .{name}));
+                run_step.dependOn(&run_cmd.step);
             }
-            const run_step = b.step(name, b.fmt("Run {s}", .{name}));
-            run_step.dependOn(&run_cmd.step);
+        }
+    }
+
+    { // Add tests for everything
+        const test_step = b.step("run-tests", "Run library tests");
+
+        var walker = try std.fs.walkPath(b.allocator, "src");
+        defer walker.deinit();
+        while (try walker.next()) |entry| {
+            if (std.mem.endsWith(u8, entry.basename, ".zig")) {
+                // Add tests to test step
+                var tests = b.addTest(entry.path);
+                tests.setBuildMode(mode);
+                test_step.dependOn(&tests.step);
+            }
         }
     }
 }
