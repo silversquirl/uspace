@@ -62,6 +62,14 @@ pub fn build(b: *std.build.Builder) !void {
             }
         }
     }
+
+    { // Install manpages
+        b.installDirectory(.{
+            .source_dir = "man",
+            .install_dir = .Prefix,
+            .install_subdir = "man",
+        });
+    }
 }
 
 fn releaseOptions(b: *std.build.Builder) std.builtin.Mode {
