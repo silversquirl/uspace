@@ -286,8 +286,16 @@ test "merge" {
 
 fn sortFiles(allocator: *std.mem.Allocator, options: SortOptions, readerables: anytype, writer: anytype) !void {
     var lines = std.ArrayList([]const u8).init(allocator);
+    defer {
+        for (lines.items) |line| {
+            allocator.free(line);
+        }
+        lines.deinit();
+    }
+
     for (readerables) |r| {
         var line_iter = util.lineIterator(allocator, r.reader());
+        defer line_iter.deinit();
         while (try line_iter.nextOwned()) |line| {
             try lines.append(line);
         }
@@ -298,4 +306,49 @@ fn sortFiles(allocator: *std.mem.Allocator, options: SortOptions, readerables: a
     for (lines.items) |line| {
         try writer.print("{s}\n", .{line});
     }
+}
+
+test "sort" {
+    const a =
+        \\ghi
+        \\xyz
+        \\jkl
+        \\abc
+    ;
+    const b =
+        \\jkl
+        \\def
+        \\mno
+        \\abc
+        \\
+        \\pqrst
+        \\
+    ;
+
+    const expect =
+        \\
+        \\abc
+        \\abc
+        \\def
+        \\ghi
+        \\jkl
+        \\jkl
+        \\mno
+        \\pqrst
+        \\xyz
+        \\
+    ;
+
+    var out: [expect.len]u8 = undefined;
+    try sortFiles(
+        std.testing.allocator,
+        .{},
+        &[_]*std.io.FixedBufferStream([]const u8){
+            &std.io.fixedBufferStream(a),
+            &std.io.fixedBufferStream(b),
+        },
+        std.io.fixedBufferStream(&out).writer(),
+    );
+
+    try std.testing.expectEqualStrings(expect, &out);
 }
