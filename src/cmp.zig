@@ -23,7 +23,7 @@ fn openFile(filename: []const u8) !std.fs.File {
 // Same as `reader.readByte` but returns `null` on EOF rather than raising
 // `error.EndOfStream`.
 fn readByteOrEOF(reader: anytype) !?u8 {
-    return reader.readByte() catch |err| switch(err) {
+    return reader.readByte() catch |err| switch (err) {
         error.EndOfStream => return null,
         else => |e| return err,
     };
@@ -46,7 +46,6 @@ fn diag(filename: []const u8) !void {
 // TODO: POSIX locale environment variables.
 
 pub fn main() !u8 {
-
     var args = std.process.args();
     const flags = try flag.parse(struct {
         l: bool = false,
@@ -64,7 +63,7 @@ pub fn main() !u8 {
     if (flags.l and flags.s) return error.MutuallExclusiveFlags;
     if (args.skip()) return error.TooManyArgs;
 
-    var df  = Diff{};
+    var df = Diff{};
     var diffs = std.ArrayList(Diff).init(allocator);
 
     // Find all differences in the files and append a `Diff` object to `diffs`
@@ -77,8 +76,14 @@ pub fn main() !u8 {
 
         // In the case that one file ends early, write a message to stderr
         // to indicate this then break the loop.
-        df.a = a orelse { try diag(file_a_name); break; };
-        df.b = b orelse { try diag(file_b_name); break; };
+        df.a = a orelse {
+            try diag(file_a_name);
+            break;
+        };
+        df.b = b orelse {
+            try diag(file_b_name);
+            break;
+        };
 
         if (df.a != df.b) {
             try diffs.append(df);
@@ -96,11 +101,9 @@ pub fn main() !u8 {
     } else {
         for (diffs.items) |d| {
             if (flags.l) {
-                try stdout.print("{d} {o} {o}\n", .{d.byte_idx, d.a, d.b});
+                try stdout.print("{d} {o} {o}\n", .{ d.byte_idx, d.a, d.b });
             } else {
-                try stdout.print("{s} {s} differ: char {d}, line {d}\n", .{
-                    file_a_name, file_b_name, d.byte_idx, d.line_idx
-                });
+                try stdout.print("{s} {s} differ: char {d}, line {d}\n", .{ file_a_name, file_b_name, d.byte_idx, d.line_idx });
             }
         }
         // This is unspecified, but since it does not matter 0 is a good
