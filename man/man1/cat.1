@@ -1,0 +1,32 @@
+.Dd $Mdocdate: May 14 2021 $
+.Dt CAT 1
+.Os uspace
+
+.Sh NAME
+.Nm cat
+.Nd concatenate and print files
+
+.Sh SYNOPSIS
+.Nm
+.Op Fl u
+.Op Ar file...
+
+.Sh DESCRIPTION
+The
+.Nm
+utility reads files in the order given and outputs their contents to the standard output.
+If no arguments are given, or if `-` is given as an argument,
+.Nm
+will read from standard input.
+
+The options are as follows:
+.Bl -tag -width Ds
+.It Fl u
+Output bytes without delay. Default for this implementation.
+.El
+
+.Sh AUTHORS
+The uspace implementation of
+.Nm
+was written by
+.An Samadi van Koten Aq Mt samadi@vktec.org.uk
