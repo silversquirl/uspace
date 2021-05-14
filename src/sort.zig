@@ -134,7 +134,7 @@ fn areLinesSorted(allocator: *std.mem.Allocator, options: SortOptions, reader: a
     var b = try std.ArrayList(u8).initCapacity(allocator, std.mem.page_size);
     defer b.deinit();
 
-    var lines = util.lineIterator(allocator, reader);
+    var lines = util.lineIterator(allocator, std.io.bufferedReader(reader).reader());
     if (!try lines.nextArrayList(&a)) {
         return true; // Only one line
     }
@@ -184,9 +184,9 @@ test "check unsorted lines" {
 }
 
 fn mergeFiles(allocator: *std.mem.Allocator, options: SortOptions, readerables: anytype, writer: anytype) !void {
-    const Reader = @TypeOf(readerables[0].reader());
+    const BufReader = std.io.BufferedReader(4096, @TypeOf(readerables[0].reader()));
     const lessThan = struct {
-        fn lessThan(opts: SortOptions, lhs: util.LineIterator(Reader), rhs: util.LineIterator(Reader)) bool {
+        fn lessThan(opts: SortOptions, lhs: util.LineIterator(BufReader.Reader), rhs: util.LineIterator(BufReader.Reader)) bool {
             if (lhs.buf) |l| {
                 if (rhs.buf) |r| {
                     // GREATER THAN!!!
@@ -201,8 +201,14 @@ fn mergeFiles(allocator: *std.mem.Allocator, options: SortOptions, readerables: 
         }
     }.lessThan;
 
-    const line_iters = try allocator.alloc(util.LineIterator(Reader), readerables.len);
-    for (readerables) |r, i| {
+    const readers = try allocator.alloc(BufReader, readerables.len);
+    defer allocator.free(readers);
+    for (readerables) |*r, i| {
+        readers[i] = std.io.bufferedReader(r.reader());
+    }
+
+    const line_iters = try allocator.alloc(util.LineIterator(BufReader.Reader), readers.len);
+    for (readers) |*r, i| {
         line_iters[i] = util.lineIterator(allocator, r.reader());
         _ = try line_iters[i].next();
     }
@@ -216,7 +222,7 @@ fn mergeFiles(allocator: *std.mem.Allocator, options: SortOptions, readerables: 
     var active_iters = line_iters;
 
     // Initial sort
-    std.sort.sort(util.LineIterator(Reader), active_iters, options, lessThan);
+    std.sort.sort(util.LineIterator(BufReader.Reader), active_iters, options, lessThan);
     // Remove any empty streams
     var i = active_iters.len;
     while (i > 0) {
@@ -233,7 +239,7 @@ fn mergeFiles(allocator: *std.mem.Allocator, options: SortOptions, readerables: 
             // Insertion sort is very fast for almost-ordered lists, which this one is (at most one item in the wrong place)
             // TODO: compare speed against sort() just to double check
             // OPTIM: only sort the last item into place, since we know that's the only out-of-order one
-            std.sort.insertionSort(util.LineIterator(Reader), active_iters, options, lessThan);
+            std.sort.insertionSort(util.LineIterator(BufReader.Reader), active_iters, options, lessThan);
         } else {
             // This stream is now empty, remove it from the active list
             active_iters = active_iters[0 .. active_iters.len - 1];
@@ -274,9 +280,9 @@ test "merge" {
     try mergeFiles(
         std.testing.allocator,
         .{},
-        &[_]*std.io.FixedBufferStream([]const u8){
-            &std.io.fixedBufferStream(a),
-            &std.io.fixedBufferStream(b),
+        &[_]std.io.FixedBufferStream([]const u8){
+            std.io.fixedBufferStream(a),
+            std.io.fixedBufferStream(b),
         },
         std.io.fixedBufferStream(&out).writer(),
     );
@@ -293,8 +299,9 @@ fn sortFiles(allocator: *std.mem.Allocator, options: SortOptions, readerables: a
         lines.deinit();
     }
 
-    for (readerables) |r| {
-        var line_iter = util.lineIterator(allocator, r.reader());
+    for (readerables) |*r| {
+        var buf_reader = std.io.bufferedReader(r.reader());
+        var line_iter = util.lineIterator(allocator, buf_reader.reader());
         defer line_iter.deinit();
         while (try line_iter.nextOwned()) |line| {
             try lines.append(line);
@@ -343,9 +350,9 @@ test "sort" {
     try sortFiles(
         std.testing.allocator,
         .{},
-        &[_]*std.io.FixedBufferStream([]const u8){
-            &std.io.fixedBufferStream(a),
-            &std.io.fixedBufferStream(b),
+        &[_]std.io.FixedBufferStream([]const u8){
+            std.io.fixedBufferStream(a),
+            std.io.fixedBufferStream(b),
         },
         std.io.fixedBufferStream(&out).writer(),
     );
