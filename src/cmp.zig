@@ -3,7 +3,11 @@ const flag = @import("lib/flag.zig");
 
 const stdout = std.io.getStdOut().writer();
 const stderr = std.io.getStdErr().writer();
+const allocator = std.heap.page_allocator;
 
+// Byte and line indexes are 1-indexed. Additionally, the `line_idx` field is
+// incremented for `\n` characters, so on binary files this value will be
+// meaningless.
 const Diff = struct {
     byte_idx: u64 = 1,
     line_idx: u64 = 1,
@@ -11,44 +15,43 @@ const Diff = struct {
     b: u8 = 0,
 };
 
+// Open a file relative to the current working directory.
 fn openFile(filename: []const u8) !std.fs.File {
-    // Open a file relative to the current working directory.
     return std.fs.cwd().openFile(filename, std.fs.File.OpenFlags{});
 }
 
+// Same as `reader.readByte` but returns `null` on EOF rather than raising
+// `error.EndOfStream`.
 fn readByteOrEOF(reader: anytype) !?u8 {
-    // Same as `reader.readByte` but handles end of file by returning `null`.
     return reader.readByte() catch |err| switch(err) {
         error.EndOfStream => return null,
         else => |e| return err,
     };
 }
 
+// Display a diagnostic message when two files differ in length.
+// It is unspecified if a diagnostic message is printed using the `-s`
+// flag, here I've chosen to print it regardless for simplicity.
 fn diag(filename: []const u8) !void {
-    // Display a diagnostic message when two files differ in length.
-    // It is unspecified if a diagnostic message is printed using the `-s`
-    // flag, here I've chosen to print it regardless for simplicity.
     try stderr.print("cmp: EOF on {s}\n", .{filename});
 }
 
-pub fn main() !u8 {
+// TODO: This deviates from the specification, also not consistent with other
+// uspace utils.
+// Instead of returning an error code >1 for errors, it currently returns
+// one of:
+//     * error.MutuallExclusiveFlags
+//     * error.NotEnoughArgs
+//     * error.TooManyArgs
+// TODO: POSIX locale environment variables.
 
-    // TODO: This deviates from the specification.
-    // Instead of returning an error code >1 for errors, it currently returns
-    // one of:
-    //     * error.InvalidFlags
-    //     * error.NotEnoughArgs
+pub fn main() !u8 {
 
     var args = std.process.args();
     const flags = try flag.parse(struct {
         l: bool = false,
         s: bool = false,
     }, &args);
-
-    if (flags.l and flags.s) {
-        try stderr.print("-l and -s are mutually exclusive", .{});
-        return error.InvalidFlags;
-    }
 
     // Try to get two filenames arguments then open the files. A return value
     // of >1 indicates an error.
@@ -57,7 +60,9 @@ pub fn main() !u8 {
     var file_a = (try openFile(file_a_name)).reader();
     var file_b = (try openFile(file_b_name)).reader();
 
-    const allocator = std.heap.page_allocator;
+    // The `-s` and `-l` flags are mutually exclusive by specification.
+    if (flags.l and flags.s) return error.MutuallExclusiveFlags;
+    if (args.skip()) return error.TooManyArgs;
 
     var df  = Diff{};
     var diffs = std.ArrayList(Diff).init(allocator);
@@ -74,6 +79,7 @@ pub fn main() !u8 {
         // to indicate this then break the loop.
         df.a = a orelse { try diag(file_a_name); break; };
         df.b = b orelse { try diag(file_b_name); break; };
+
         if (df.a != df.b) {
             try diffs.append(df);
             if (!flags.l) break;
@@ -82,8 +88,9 @@ pub fn main() !u8 {
         if (df.a == '\n') df.line_idx += 1;
     }
 
-    // Output the diffs. In the case of the `-s` flag, report via the exit
-    // signal.
+    // Output the diffs. For the `-s` flag, report via the return code, else
+    // print each diff on a line. For the `-l` flag, instead output the octal
+    // value of the differing bytes.
     if (flags.s) {
         return if (diffs.items.len == 0) 0 else 1;
     } else {
