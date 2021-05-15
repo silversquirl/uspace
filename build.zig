@@ -132,7 +132,7 @@ const PreprocessManStep = struct {
             .builder = builder,
             .step = std.build.Step.init(.InstallFile, builder.fmt("preproccess and install {s}", .{src_path}), builder.allocator, make),
             .src_path = builder.dupePath(src_path),
-            .dir = dupeInstallDir(dir), // TODO use std dupe when public
+            .dir = dupeInstallDir(dir, builder), // TODO use std dupe when public
             .dest_rel_path = builder.dupePath(dest_rel_path),
             .version = version,
         };
