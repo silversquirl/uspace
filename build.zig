@@ -1,5 +1,78 @@
 const std = @import("std");
 
+const InstallManStep = struct {
+    step: std.build.Step,
+    builder: *std.build.Builder,
+    src_path: []const u8,
+    dir: std.build.InstallDir,
+    dest_rel_path: []const u8,
+
+    const Self = @This();
+
+    pub fn init(
+        builder: *std.build.Builder,
+        src_path: []const u8,
+        dir: std.build.InstallDir,
+        dest_rel_path: []const u8,
+    ) InstallManStep {
+        builder.pushInstalledFile(dir, dest_rel_path);
+        return InstallManStep{
+            .builder = builder,
+            .step = std.build.Step.init(.InstallFile, builder.fmt("install {s}", .{src_path}), builder.allocator, make),
+            .src_path = builder.dupePath(src_path),
+            .dir = dir,
+            .dest_rel_path = builder.dupePath(dest_rel_path),
+        };
+    }
+
+    fn make(step: *std.build.Step) !void {
+        const self = @fieldParentPtr(InstallManStep, "step", step);
+        const full_src_path = self.builder.pathFromRoot(self.src_path);
+        const full_dest_path = self.builder.getInstallPath(self.dir, self.dest_rel_path);
+        try self.updateMan(full_src_path, full_dest_path);
+    }
+
+    fn updateMan(self: *Self, src_path: []const u8, dest_path: []const u8) !void {
+        const cwd = std.fs.cwd();
+
+        if (self.builder.verbose) {
+            std.debug.warn("cp {s} {s} ", .{ src_path, dest_path });
+        }
+
+        var src_file = try cwd.openFile(self.src_path, .{});
+        defer src_file.close();
+
+        if (std.fs.path.dirname(dest_path)) |dirname| {
+            try cwd.makePath(dest_path);
+        }
+
+        var atomic_file = try cwd.atomicFile(dest_path, .{});
+        defer atomic_file.deinit();
+
+        const reader = src_file.reader();
+        const writer = atomic_file.file.writer();
+
+        while (true) {
+            // TODO check for os string
+            const byte = reader.readByte() catch |err| {
+                if (err == error.EndOfStream) {
+                    break;
+                } else {
+                    return err;
+                }
+            };
+
+            try writer.writeByte(byte);
+        }
+    }
+};
+
+fn addInstallMan(self: *std.build.Builder, path: []const u8) *InstallManStep {
+    const install_step = self.allocator.create(InstallManStep) catch unreachable;
+    install_step.* = InstallManStep.init(self, path, .Prefix, path);
+    return install_step;
+}
+
 pub fn build(b: *std.build.Builder) !void {
     const target = b.standardTargetOptions(.{});
     const mode = releaseOptions(b);
@@ -64,11 +137,15 @@ pub fn build(b: *std.build.Builder) !void {
     }
 
     { // Install manpages
-        b.installDirectory(.{
-            .source_dir = "man",
-            .install_dir = .Prefix,
-            .install_subdir = "man",
-        });
+        inline for ([_][]const u8{"man1"}) |dir| {
+            var manDir = try std.fs.cwd().openDir("man/" ++ dir, .{ .access_sub_paths = false, .iterate = true });
+            defer manDir.close();
+            var iter = manDir.iterate();
+            while (try iter.next()) |entry| {
+                const path = try std.mem.concat(b.allocator, u8, &.{ "man/" ++ dir ++ "/", entry.name });
+                b.getInstallStep().dependOn(&addInstallMan(b, path).step);
+            }
+        }
     }
 }
 
