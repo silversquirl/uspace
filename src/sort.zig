@@ -2,9 +2,7 @@ const std = @import("std");
 const flag = @import("lib/flag.zig");
 const util = @import("lib/util.zig");
 
-fn check(options: SortOptions, nowarn: bool, args: *std.process.ArgIterator) !bool {
-    // TODO: handle nowarn
-
+fn check(options: SortOptions, args: *std.process.ArgIterator) !CheckResult {
     const allocator = std.heap.page_allocator;
     if (args.nextPosix()) |path| {
         if (args.skip()) {
@@ -90,6 +88,8 @@ pub fn main() !u8 {
     }, &args);
 
     const options = SortOptions{
+        .unique = flags.u,
+
         .only_alnum = flags.d,
         .ignore_case = flags.f,
         .only_print = flags.i,
@@ -101,10 +101,20 @@ pub fn main() !u8 {
     // TODO: handle -o
 
     if (flags.c or flags.C) {
-        if (try check(options, flags.C, &args)) {
-            return 0;
-        } else {
-            return 1;
+        switch (try check(options, &args)) {
+            .ok => return 0,
+            .disorder => |line_no| {
+                if (flags.c) {
+                    try std.io.getStdErr().writer().print("line {} out of order\n", .{line_no});
+                }
+                return 1;
+            },
+            .duplicate => |line_no| {
+                if (flags.c) {
+                    try std.io.getStdErr().writer().print("line {} is a duplicate\n", .{line_no});
+                }
+                return 1;
+            },
         }
     } else if (flags.m) {
         try merge(options, &args);
@@ -115,6 +125,8 @@ pub fn main() !u8 {
 }
 
 const SortOptions = struct {
+    unique: bool = false,
+
     only_alnum: bool = false,
     ignore_case: bool = false,
     only_print: bool = false,
@@ -128,7 +140,7 @@ const SortOptions = struct {
     }
 };
 
-fn areLinesSorted(allocator: *std.mem.Allocator, options: SortOptions, reader: anytype) !bool {
+fn areLinesSorted(allocator: *std.mem.Allocator, options: SortOptions, reader: anytype) !CheckResult {
     var a = try std.ArrayList(u8).initCapacity(allocator, std.mem.page_size);
     defer a.deinit();
     var b = try std.ArrayList(u8).initCapacity(allocator, std.mem.page_size);
@@ -136,13 +148,18 @@ fn areLinesSorted(allocator: *std.mem.Allocator, options: SortOptions, reader: a
 
     var lines = util.lineIterator(allocator, std.io.bufferedReader(reader).reader());
     if (!try lines.nextArrayList(&a)) {
-        return true; // Only one line
+        return CheckResult.ok; // Only one line
     }
 
-    var done = false;
+    var line_no: u64 = 1;
     while (try lines.nextArrayList(&b)) {
+        line_no += 1;
+
         if (options.stringLess(b.items, a.items)) {
-            return false; // Out of order lines
+            return CheckResult{ .disorder = line_no }; // Out of order lines
+        }
+        if (options.unique and !options.stringLess(a.items, b.items)) {
+            return CheckResult{ .duplicate = line_no };
         }
 
         const tmp = a;
@@ -150,11 +167,17 @@ fn areLinesSorted(allocator: *std.mem.Allocator, options: SortOptions, reader: a
         b = tmp;
     }
 
-    return true;
+    return CheckResult.ok;
 }
 
+const CheckResult = union(enum) {
+    ok: void,
+    disorder: u64,
+    duplicate: u64,
+};
+
 test "check sorted lines" {
-    try std.testing.expect(try areLinesSorted(
+    const result = try areLinesSorted(
         std.testing.allocator,
         .{},
         std.io.fixedBufferStream(
@@ -165,11 +188,12 @@ test "check sorted lines" {
             \\jkl
             \\
         ).reader(),
-    ));
+    );
+    try std.testing.expect(result == .ok);
 }
 
 test "check unsorted lines" {
-    try std.testing.expect(!try areLinesSorted(
+    const result = try areLinesSorted(
         std.testing.allocator,
         .{},
         std.io.fixedBufferStream(
@@ -180,7 +204,36 @@ test "check unsorted lines" {
             \\abc
             \\
         ).reader(),
-    ));
+    );
+    try std.testing.expect(result == .disorder and result.disorder == 2);
+}
+
+test "check with duplicates" {
+    const result = try areLinesSorted(
+        std.testing.allocator,
+        .{},
+        std.io.fixedBufferStream(
+            \\abc
+            \\def
+            \\def
+            \\ghi
+        ).reader(),
+    );
+    try std.testing.expect(result == .ok);
+}
+
+test "check for duplicates" {
+    const result = try areLinesSorted(
+        std.testing.allocator,
+        .{ .unique = true },
+        std.io.fixedBufferStream(
+            \\abc
+            \\def
+            \\def
+            \\ghi
+        ).reader(),
+    );
+    try std.testing.expect(result == .duplicate and result.duplicate == 3);
 }
 
 fn mergeFiles(allocator: *std.mem.Allocator, options: SortOptions, readerables: anytype, writer: anytype) !void {
@@ -232,9 +285,23 @@ fn mergeFiles(allocator: *std.mem.Allocator, options: SortOptions, readerables: 
         }
     }
 
+    var prev_line: ?[]const u8 = null;
     while (active_iters.len > 0) {
         const lines = &active_iters[active_iters.len - 1];
-        try writer.print("{s}\n", .{lines.buf.?.items});
+
+        if (options.unique) print: {
+            if (prev_line) |line| {
+                if (std.mem.eql(u8, line, lines.buf.?.items)) {
+                    break :print; // Don't print duplicates
+                }
+                allocator.free(line);
+            }
+            try writer.print("{s}\n", .{lines.buf.?.items});
+            prev_line = lines.buf.?.toOwnedSlice();
+        } else {
+            try writer.print("{s}\n", .{lines.buf.?.items});
+        }
+
         if (try lines.next()) |_| {
             // Insertion sort is very fast for almost-ordered lists, which this one is (at most one item in the wrong place)
             // TODO: compare speed against sort() just to double check
@@ -244,6 +311,9 @@ fn mergeFiles(allocator: *std.mem.Allocator, options: SortOptions, readerables: 
             // This stream is now empty, remove it from the active list
             active_iters = active_iters[0 .. active_iters.len - 1];
         }
+    }
+    if (prev_line) |line| {
+        allocator.free(line);
     }
 }
 
@@ -290,6 +360,46 @@ test "merge" {
     try std.testing.expectEqualStrings(expect, &out);
 }
 
+test "merge unique" {
+    const a =
+        \\abc
+        \\ghi
+        \\jkl
+        \\xyz
+    ;
+    const b =
+        \\abc
+        \\def
+        \\jkl
+        \\mno
+        \\pqrst
+        \\
+    ;
+
+    const expect =
+        \\abc
+        \\def
+        \\ghi
+        \\jkl
+        \\mno
+        \\pqrst
+        \\xyz
+        \\
+    ;
+
+    var out: [expect.len]u8 = undefined;
+    try mergeFiles(
+        std.testing.allocator,
+        .{ .unique = true },
+        &[_]std.io.FixedBufferStream([]const u8){
+            std.io.fixedBufferStream(a),
+            std.io.fixedBufferStream(b),
+        },
+        std.io.fixedBufferStream(&out).writer(),
+    );
+
+    try std.testing.expectEqualStrings(expect, &out);
+}
 fn sortFiles(allocator: *std.mem.Allocator, options: SortOptions, readerables: anytype, writer: anytype) !void {
     var lines = std.ArrayList([]const u8).init(allocator);
     defer {
@@ -310,7 +420,10 @@ fn sortFiles(allocator: *std.mem.Allocator, options: SortOptions, readerables: a
 
     std.sort.sort([]const u8, lines.items, options, SortOptions.stringLess);
 
-    for (lines.items) |line| {
+    for (lines.items) |line, i| {
+        if (options.unique and i > 0 and std.mem.eql(u8, line, lines.items[i - 1])) {
+            continue; // Don't print duplicates
+        }
         try writer.print("{s}\n", .{line});
     }
 }
@@ -350,6 +463,50 @@ test "sort" {
     try sortFiles(
         std.testing.allocator,
         .{},
+        &[_]std.io.FixedBufferStream([]const u8){
+            std.io.fixedBufferStream(a),
+            std.io.fixedBufferStream(b),
+        },
+        std.io.fixedBufferStream(&out).writer(),
+    );
+
+    try std.testing.expectEqualStrings(expect, &out);
+}
+
+test "sort unique" {
+    const a =
+        \\ghi
+        \\xyz
+        \\xyz
+        \\jkl
+        \\abc
+    ;
+    const b =
+        \\jkl
+        \\def
+        \\mno
+        \\abc
+        \\
+        \\pqrst
+        \\
+    ;
+
+    const expect =
+        \\
+        \\abc
+        \\def
+        \\ghi
+        \\jkl
+        \\mno
+        \\pqrst
+        \\xyz
+        \\
+    ;
+
+    var out: [expect.len]u8 = undefined;
+    try sortFiles(
+        std.testing.allocator,
+        .{ .unique = true },
         &[_]std.io.FixedBufferStream([]const u8){
             std.io.fixedBufferStream(a),
             std.io.fixedBufferStream(b),
