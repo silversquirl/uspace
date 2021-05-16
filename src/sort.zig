@@ -18,7 +18,7 @@ fn check(options: SortOptions, args: *std.process.ArgIterator) !CheckResult {
     }
 }
 
-fn merge(options: SortOptions, args: *std.process.ArgIterator) !void {
+fn merge(options: SortOptions, out: std.fs.File, args: *std.process.ArgIterator) !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     const allocator = &gpa.allocator;
 
@@ -30,7 +30,6 @@ fn merge(options: SortOptions, args: *std.process.ArgIterator) !void {
         allocator.free(files);
     }
 
-    const out = std.io.getStdOut();
     if (files.len == 1) {
         try out.writeFileAll(files[0], .{});
     } else {
@@ -38,7 +37,7 @@ fn merge(options: SortOptions, args: *std.process.ArgIterator) !void {
     }
 }
 
-fn sort(options: SortOptions, args: *std.process.ArgIterator) !void {
+fn sort(options: SortOptions, out: std.fs.File, args: *std.process.ArgIterator) !void {
     const allocator = &std.heap.ArenaAllocator.init(std.heap.page_allocator).allocator;
 
     var files = try fileList(allocator, args);
@@ -49,7 +48,6 @@ fn sort(options: SortOptions, args: *std.process.ArgIterator) !void {
         allocator.free(files);
     }
 
-    const out = std.io.getStdOut();
     try sortFiles(allocator, options, files, out.writer());
 }
 
@@ -98,8 +96,6 @@ pub fn main() !u8 {
         // TODO: sort key stuff
     };
 
-    // TODO: handle -o
-
     if (flags.c or flags.C) {
         switch (try check(options, &args)) {
             .ok => return 0,
@@ -116,10 +112,17 @@ pub fn main() !u8 {
                 return 1;
             },
         }
-    } else if (flags.m) {
-        try merge(options, &args);
+    }
+
+    const out = if (flags.o) |path|
+        try std.fs.cwd().createFile(path, .{})
+    else
+        std.io.getStdOut();
+    defer out.close();
+    if (flags.m) {
+        try merge(options, out, &args);
     } else {
-        try sort(options, &args);
+        try sort(options, out, &args);
     }
     return 0;
 }
