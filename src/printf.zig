@@ -8,27 +8,18 @@ const Flags = struct {
     zero_pad: bool = false,
 };
 
-const SpecifierData = struct {
+const SpecData = struct {
     flags: Flags = Flags{},
     field_width: usize = 0,
     precision: usize = 0,
 };
-
-fn noSpecifier(str: []const u8) bool {
-    for (str) |c| {
-        if (c == '%') {
-            return false;
-        }
-    }
-    return true;
-}
 
 // All of these parsers parse only part of a string; i.e they parse whatever is
 // valid from a starting index, this could be no characters at all, in which
 // case there will be a default value specified. As an example strToInt parsing
 // the string "123hello" will return 123 and increment idx to be sitting at the
 // position of 'h'
-const Parser = struct {
+const Formatter = struct {
     str: []const u8,
     idx: usize = 0,
 
@@ -64,7 +55,7 @@ const Parser = struct {
         }
     }
 
-    fn spec(self: *Self) ?fn (*std.process.ArgIterator, SpecifierData) []const u8 {
+    fn spec(self: *Self) ?fn (*std.process.ArgIterator, SpecData) []const u8 {
         return switch (self.str[self.idx]) {
             // 'a' => {},
             // 'A' => {},
@@ -89,37 +80,34 @@ const Parser = struct {
 };
 
 const fmt_functions = struct {
-    fn evalEscape(allocator: *std.mem.Allocator, str: []const u8) ![]const u8 {
-        var list = std.ArrayList(u8).init(allocator);
-
-        var i: usize = 0;
-        while (i < str.len) : (i += 1) {
-            if (str[i] == '\\') {
-                i += 1;
-                try list.appendSlice(switch (str[i]) {
-                    '\\' => "\\", // backslash
-                    'a' => &.{7}, //alert
-                    'b' => &.{8}, // backspace
-                    'f' => &.{12}, // form-feed
-                    'n' => &.{'\n'}, // newline
-                    'r' => &.{'\r'}, // carrige-return
-                    't' => &.{'\t'}, // tab
-                    'v' => &.{11}, // vertical tab
-                    else => &.{ '\\', str[i] },
-                });
-            } else try list.append(str[i]);
-        }
-
-        return list.items;
-    }
-
-    fn percent(
-        args: *std.process.ArgIterator,
-        data: SpecifierData,
-    ) []const u8 {
+    fn percent(args: *std.process.ArgIterator, data: SpecData) []const u8 {
         return "%";
     }
 };
+
+fn evalEscape(allocator: *std.mem.Allocator, str: []const u8) ![]const u8 {
+    var list = std.ArrayList(u8).init(allocator);
+
+    var i: usize = 0;
+    while (i < str.len) : (i += 1) {
+        if (str[i] == '\\') {
+            i += 1;
+            try list.appendSlice(switch (str[i]) {
+                '\\' => "\\", // backslash
+                'a' => &.{7}, //alert
+                'b' => &.{8}, // backspace
+                'f' => &.{12}, // form-feed
+                'n' => &.{'\n'}, // newline
+                'r' => &.{'\r'}, // carrige-return
+                't' => &.{'\t'}, // tab
+                'v' => &.{11}, // vertical tab
+                else => &.{ '\\', str[i] },
+            });
+        } else try list.append(str[i]);
+    }
+
+    return list.items;
+}
 
 pub fn main() !void {
     const out = std.io.getStdOut().writer();
@@ -129,17 +117,13 @@ pub fn main() !void {
 
     const allocator = std.heap.page_allocator;
 
-    const fmt = try fmt_functions.evalEscape(allocator, args.nextPosix() orelse {
+    const fmt = try evalEscape(allocator, args.nextPosix() orelse {
         try err.print("printf: not enough arguments\n", .{});
         return;
     });
     defer allocator.free(fmt);
 
-    if (noSpecifier(fmt)) {
-        try out.print("{s}", .{fmt});
-        return;
-    }
-
+    var no_argument = true;
     var arg: ?[:0]const u8 = "";
     while (arg != null) {
         var i: usize = 0;
@@ -147,13 +131,16 @@ pub fn main() !void {
             if (fmt[i] == '%') {
                 const start = i;
                 i += 1;
+                if (fmt[i] != '%') {
+                    no_argument = false;
+                }
 
-                var parser = Parser{
+                var parser = Formatter{
                     .str = fmt,
                     .idx = i,
                 };
 
-                var spec_data = SpecifierData{};
+                var spec_data = SpecData{};
                 spec_data.flags = parser.flags();
 
                 spec_data.field_width = parser.int();
@@ -171,6 +158,7 @@ pub fn main() !void {
                 try out.print("{c}", .{fmt[i]});
             }
         }
+        if (no_argument) break;
         arg = args.nextPosix();
     }
 }
